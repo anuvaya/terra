@@ -1,0 +1,224 @@
+# Terra Cheatsheet
+
+## Agent Lifecycle
+
+```elixir
+# Define an agent
+defmodule MyAgent do
+  use Terra.Agent
+  # Implement: init/1, context/2, handle_input/3,
+  #            handle_stream_event/3, handle_response/2
+end
+
+# Start and interact
+{:ok, pid} = MyAgent.start_link(%{})
+Terra.Agent.send_input(pid, {:message, "Hello"})
+```
+
+## Context Building
+{: .col-2}
+
+### Basic context
+
+```elixir
+Terra.Context.new()
+|> Terra.Context.system("System prompt")
+|> Terra.Context.history(state.data.history)
+|> Terra.Context.model(%{
+  model: "claude-sonnet-4-5-20250929",
+  max_tokens: 4096,
+  config: %{api_key: key}
+})
+|> Terra.Context.age_tools(state)
+|> Terra.Context.prune_thinking(1)
+|> Terra.Context.build()
+```
+
+### With documents
+
+```elixir
+Terra.Context.new()
+|> Terra.Context.system("System prompt")
+|> Terra.Context.document(doc)
+|> Terra.Context.document(Terra.Kernel.read(kernel, :slot))
+|> Terra.Context.history(state.data.history)
+|> Terra.Context.model(%{model: "claude-sonnet-4-5-20250929", max_tokens: 4096})
+|> Terra.Context.age_tools(state)
+|> Terra.Context.prune_thinking(1)
+|> Terra.Context.build()
+```
+
+## Tool Definitions
+{: .col-2}
+
+### Simple tool
+
+```elixir
+import Terra.Tool
+
+tool("get_weather")
+|> desc("Get current weather")
+|> param(:city, :string, required: true, desc: "City name")
+```
+
+### With aging + templates
+
+```elixir
+tool("get_forecast")
+|> desc("Generate weather forecast")
+|> param(:date, :string, required: true, desc: "Forecast date")
+|> aging(expiry: 4, pruning: 8)
+|> result_template(~S"<%= inspect(@result) %>")
+|> expiry_message(~S"Forecast expired — re-fetch if needed.")
+|> result_type(:document)
+|> cache_control(:ephemeral)
+```
+
+### Nested objects
+
+```elixir
+param(:location, :object, required: true, properties: [
+  param(:lat, :number, required: true, desc: "Latitude"),
+  param(:lon, :number, required: true, desc: "Longitude")
+])
+```
+
+### Array parameters
+
+```elixir
+param(:conditions, {:array, :string}, required: true,
+  desc: "Conditions to query",
+  enum: ~w(sunny cloudy rainy snowy))
+```
+
+## Tool Registry
+
+```elixir
+defmodule MyTools do
+  use Terra.ToolRegistry
+  # Or with helpers: use Terra.ToolRegistry, helpers: MyHelpers
+
+  import Terra.Tool
+
+  @impl true
+  def tools do
+    [
+      tool("my_tool") |> desc("...") |> param(:x, :string, required: true)
+    ]
+  end
+
+  @impl true
+  def execute("my_tool", %{x: x}, state) do
+    {:ok, "result: #{x}", state}
+    # Or: {:error, "reason", state}
+  end
+end
+```
+
+## Documents
+
+```elixir
+# Create
+doc = Terra.Document.new("title", "context for LLM", "content", cache: :ephemeral)
+
+# Store on agent state
+state = Terra.Document.put(state, doc)
+
+# Retrieve / delete / list
+Terra.Document.get(state, "title")
+state = Terra.Document.delete(state, "title")
+Terra.Document.list(state)
+```
+
+## Multi-Agent Sessions
+{: .col-2}
+
+### Start a session
+
+```elixir
+{:ok, sup} = Terra.Session.start_link(
+  buffers: [:plan, :analysis],
+  agents: [
+    {AgentA, %{}},
+    {AgentB, %{}}
+  ]
+)
+
+kernel = Terra.Session.kernel(sup)
+[a, b] = Terra.Session.agents(sup)
+```
+
+### Kernel operations
+
+```elixir
+# Read / write
+doc = Terra.Kernel.read(kernel, :plan)
+:ok = Terra.Kernel.write(kernel, :plan, doc)
+
+# Lock → write → unlock (atomic)
+:ok = Terra.Kernel.lock(kernel, :plan)
+:ok = Terra.Kernel.write_and_unlock(kernel, :plan, doc)
+
+# Subscribe to updates
+Terra.Kernel.subscribe(kernel)
+# Receives: {:kernel_update, :plan, doc}
+
+# Snapshot all slots
+Terra.Kernel.snapshot(kernel)
+```
+
+## Actions (from callbacks)
+
+```elixir
+# Invoke the LLM
+{:next_state, :thinking, state, [:invoke]}
+
+# Cancel active stream
+{:keep_state, state, [:cancel_stream]}
+
+# State timeout
+{:keep_state, state, [{:state_timeout, 5000, :check}]}
+
+# Named timeout
+{:keep_state, state, [{:generic_timeout, :retry, 3000, :retry_invoke}]}
+```
+
+## Response Handling
+
+```elixir
+def handle_response(%{stop_reason: "tool_use"} = resp, state) do
+  assistant = %{role: "assistant", content: resp.content_blocks}
+  tool_results = Enum.map(resp.tool_results, fn tr ->
+    content = case tr.result do
+      {:ok, val} -> val
+      {:error, reason} -> "Error: #{inspect(reason)}"
+    end
+    %{type: "tool_result", tool_use_id: tr.tool_use_id, content: content}
+  end)
+  history = state.data.history ++ [assistant, %{role: "user", content: tool_results}]
+  state = %{state | data: %{state.data | history: history}}
+  {:next_state, :thinking, state, [:invoke]}
+end
+
+def handle_response(resp, state) do
+  text = Enum.find_value(resp.content_blocks, "", fn
+    %{type: "text", text: t} -> t
+    _ -> nil
+  end)
+  history = state.data.history ++ [%{role: "assistant", content: text}]
+  {:next_state, :idle, %{state | data: %{state.data | history: history}}}
+end
+```
+
+## Providers
+
+```elixir
+# Anthropic (Claude)
+provider: {Terra.Provider.Anthropic, %{}}
+
+# OpenAI (GPT / o-series)
+provider: {Terra.Provider.OpenAI, %{}}
+
+# Google (Gemini)
+provider: {Terra.Provider.Google, %{}}
+```

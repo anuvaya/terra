@@ -9,7 +9,8 @@ defmodule Terra.MixProject do
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
-      docs: docs()
+      docs: docs(),
+      package: package()
     ]
   end
 
@@ -32,10 +33,17 @@ defmodule Terra.MixProject do
     ]
   end
 
+  defp package do
+    [
+      licenses: ["Apache-2.0"],
+      links: %{"GitHub" => "https://github.com/anuvaya/terra"}
+    ]
+  end
+
   defp docs do
     [
       main: "Terra",
-      source_url: "https://github.com/anuvayalabs/terra",
+      source_url: "https://github.com/anuvaya/terra",
       source_ref: "main",
       nest_modules_by_prefix: [Terra.Provider],
       extras: [

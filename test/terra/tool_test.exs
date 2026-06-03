@@ -193,6 +193,35 @@ defmodule Terra.ToolTest do
     end
   end
 
+  describe "validate/2 — empty input" do
+    test "treats empty string as no arguments" do
+      schema = tool("noargs")
+      assert {:ok, %{}} = Terra.Tool.validate(schema, "")
+    end
+
+    test "treats whitespace-only string as no arguments" do
+      schema = tool("noargs")
+      assert {:ok, %{}} = Terra.Tool.validate(schema, "   \n  ")
+    end
+
+    test "empty input still enforces required fields" do
+      schema =
+        tool("test")
+        |> param(:name, :string, required: true)
+
+      assert {:error, errors} = Terra.Tool.validate(schema, "")
+      assert "name: is required" in errors
+    end
+
+    test "applies defaults when input is empty" do
+      schema =
+        tool("test")
+        |> param(:depth, :integer, default: 5)
+
+      assert {:ok, %{depth: 5}} = Terra.Tool.validate(schema, "")
+    end
+  end
+
   describe "validate/2 — type coercion" do
     test "coerces string to integer" do
       schema = tool("test") |> param(:depth, :integer, [])

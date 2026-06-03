@@ -351,9 +351,15 @@ defmodule Terra.Tool do
   """
   @spec validate(t(), String.t() | map()) :: {:ok, map()} | {:error, [String.t()]}
   def validate(%__MODULE__{} = tool, input) when is_binary(input) do
-    case Jason.decode(input) do
-      {:ok, decoded} -> validate(tool, decoded)
-      {:error, _} -> {:error, ["input: invalid JSON"]}
+    case String.trim(input) do
+      "" ->
+        validate(tool, %{})
+
+      trimmed ->
+        case Jason.decode(trimmed) do
+          {:ok, decoded} -> validate(tool, decoded)
+          {:error, _} -> {:error, ["input: invalid JSON"]}
+        end
     end
   end
 

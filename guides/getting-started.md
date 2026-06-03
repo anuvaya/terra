@@ -11,7 +11,7 @@ Add Terra to your `mix.exs` dependencies:
 ```elixir
 defp deps do
   [
-    {:terra, path: "packages/terra"}
+    {:terra, github: "anuvaya/terra"}
   ]
 end
 ```

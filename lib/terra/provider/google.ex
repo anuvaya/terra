@@ -17,7 +17,8 @@ defmodule Terra.Provider.Google do
           config: %{
             api_key: System.get_env("GOOGLE_API_KEY"),
             base_url: "https://generativelanguage.googleapis.com/v1beta",  # optional
-            receive_timeout: 120_000                                        # optional
+            receive_timeout: 120_000,                                       # optional
+            finch_name: MyApp.Finch                                         # optional
           }
         })
         |> Terra.Context.build()
@@ -83,16 +84,24 @@ defmodule Terra.Provider.Google do
     url = "#{base_url}/models/#{model}:streamGenerateContent?alt=sse&key=#{api_key}"
     headers = %{"content-type" => "application/json"}
 
+    finch_opts =
+      case Map.get(config, :finch_name) do
+        nil -> []
+        name -> [finch: name]
+      end
+
     Terra.Telemetry.provider_request(caller, body, headers)
 
     req =
       Req.new(
-        url: url,
-        method: :post,
-        headers: headers,
-        body: Jason.encode!(body),
-        receive_timeout: timeout,
-        into: stream_handler(caller, ref)
+        [
+          url: url,
+          method: :post,
+          headers: headers,
+          body: Jason.encode!(body),
+          receive_timeout: timeout,
+          into: stream_handler(caller, ref)
+        ] ++ finch_opts
       )
 
     case Req.request(req) do

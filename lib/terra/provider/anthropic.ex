@@ -20,7 +20,8 @@ defmodule Terra.Provider.Anthropic do
             api_key: System.get_env("ANTHROPIC_API_KEY"),
             base_url: "https://api.anthropic.com",            # optional
             beta: ["interleaved-thinking-2025-05-14"],         # optional
-            receive_timeout: 120_000                           # optional
+            receive_timeout: 120_000,                          # optional
+            finch_name: MyApp.Finch                            # optional
           }
         })
         |> Terra.Context.build()
@@ -92,17 +93,25 @@ defmodule Terra.Provider.Anthropic do
     body = build_body(params)
     headers = build_headers(api_key, beta)
 
+    finch_opts =
+      case Map.get(config, :finch_name) do
+        nil -> []
+        name -> [finch: name]
+      end
+
     Terra.Telemetry.provider_request(caller, body, headers)
 
     req =
       Req.new(
-        base_url: base_url,
-        url: "/v1/messages",
-        method: :post,
-        headers: headers,
-        body: Jason.encode!(body),
-        receive_timeout: timeout,
-        into: stream_handler(caller, ref)
+        [
+          base_url: base_url,
+          url: "/v1/messages",
+          method: :post,
+          headers: headers,
+          body: Jason.encode!(body),
+          receive_timeout: timeout,
+          into: stream_handler(caller, ref)
+        ] ++ finch_opts
       )
 
     result = Req.request(req)

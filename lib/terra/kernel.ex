@@ -83,14 +83,31 @@ defmodule Terra.Kernel do
   end
 
   @doc """
-  Acquire an exclusive lock on `slot`.
+  Acquire an exclusive lock on `slot`, optionally merging caller-supplied
+  metadata into the slot's metadata map.
 
   Returns `{:error, :already_locked}` if another process already holds it.
-  Locks are automatically released if the locking process exits.
+  Locks are automatically released if the locking process exits. The metadata
+  map is opaque to the kernel — callers attach whatever context they want
+  (working focus, intent, request id, etc.) and read it back via `status/2`.
+  Passed metadata is shallow-merged into existing metadata; pass `%{}` to
+  leave it untouched.
   """
-  @spec lock(GenServer.server(), atom()) :: :ok | {:error, :unknown_slot | :already_locked}
-  def lock(kernel, slot) do
-    GenServer.call(kernel, {:lock, slot})
+  @spec lock(GenServer.server(), atom(), map()) ::
+          :ok | {:error, :unknown_slot | :already_locked}
+  def lock(kernel, slot, metadata \\ %{}) when is_map(metadata) do
+    GenServer.call(kernel, {:lock, slot, metadata})
+  end
+
+  @doc """
+  Merge `metadata` into the slot's metadata map without touching the lock.
+
+  Used by callers that refine slot context mid-loop. Shallow merge: keys
+  present in `metadata` overwrite existing ones; everything else is preserved.
+  """
+  @spec set_metadata(GenServer.server(), atom(), map()) :: :ok | {:error, :unknown_slot}
+  def set_metadata(kernel, slot, metadata) when is_map(metadata) do
+    GenServer.call(kernel, {:set_metadata, slot, metadata})
   end
 
   @doc """
@@ -102,7 +119,8 @@ defmodule Terra.Kernel do
   end
 
   @doc """
-  Return lightweight status for `slot`: locked/idle, updated_at, and content size.
+  Return lightweight status for `slot`: locked/idle, updated_at, content size,
+  and the caller-supplied metadata map.
   """
   @spec status(GenServer.server(), atom()) :: {:ok, map()} | {:error, :unknown_slot}
   def status(kernel, slot) do
@@ -127,7 +145,7 @@ defmodule Terra.Kernel do
   def init(buffers) do
     slots =
       Map.new(buffers, fn name ->
-        {name, %{doc: nil, locked_by: nil, updated_at: nil}}
+        {name, %{doc: nil, locked_by: nil, updated_at: nil, metadata: %{}}}
       end)
 
     {:ok, %{slots: slots, subscribers: %{}}}
@@ -160,13 +178,14 @@ defmodule Terra.Kernel do
       nil ->
         {:reply, {:error, :unknown_slot}, state}
 
-      %{doc: doc, locked_by: locked_by, updated_at: updated_at} ->
+      %{doc: doc, locked_by: locked_by, updated_at: updated_at, metadata: metadata} ->
         {:reply,
          {:ok,
           %{
             state: if(locked_by != nil, do: :locked, else: :idle),
             updated_at: updated_at,
-            size: if(doc, do: String.length(doc.content), else: 0)
+            size: if(doc, do: String.length(doc.content), else: 0),
+            metadata: metadata
           }}, state}
     end
   end
@@ -224,7 +243,7 @@ defmodule Terra.Kernel do
     {:reply, snapshot, state}
   end
 
-  def handle_call({:lock, slot}, {from_pid, _}, state) do
+  def handle_call({:lock, slot, metadata}, {from_pid, _}, state) do
     case Map.get(state.slots, slot) do
       nil ->
         {:reply, {:error, :unknown_slot}, state}
@@ -232,10 +251,26 @@ defmodule Terra.Kernel do
       %{locked_by: pid} when pid != nil ->
         {:reply, {:error, :already_locked}, state}
 
-      %{} ->
+      %{metadata: current_metadata} ->
         ref = Process.monitor(from_pid)
-        slots = put_in(state.slots, [slot, :locked_by], {from_pid, ref})
+
+        slots =
+          state.slots
+          |> put_in([slot, :locked_by], {from_pid, ref})
+          |> put_in([slot, :metadata], Map.merge(current_metadata, metadata))
+
         Terra.Telemetry.kernel_lock(slot, from_pid)
+        {:reply, :ok, %{state | slots: slots}}
+    end
+  end
+
+  def handle_call({:set_metadata, slot, metadata}, _from, state) do
+    case Map.get(state.slots, slot) do
+      nil ->
+        {:reply, {:error, :unknown_slot}, state}
+
+      %{metadata: current_metadata} ->
+        slots = put_in(state.slots, [slot, :metadata], Map.merge(current_metadata, metadata))
         {:reply, :ok, %{state | slots: slots}}
     end
   end

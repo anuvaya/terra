@@ -168,6 +168,88 @@ defmodule Terra.KernelTest do
     end
   end
 
+  # ── Status / Metadata ───────────────────────────────────
+
+  describe "status/2" do
+    test "reports idle slot with empty metadata" do
+      {:ok, pid} = Kernel.start_link(buffers: [:plan])
+
+      assert {:ok, status} = Kernel.status(pid, :plan)
+      assert status.state == :idle
+      assert status.updated_at == nil
+      assert status.size == 0
+      assert status.metadata == %{}
+    end
+
+    test "reports locked state and content size after write" do
+      {:ok, pid} = Kernel.start_link(buffers: [:plan])
+      doc = Document.new("facts", "ctx", "hello")
+
+      :ok = Kernel.lock(pid, :plan)
+      :ok = Kernel.write_and_unlock(pid, :plan, doc)
+      :ok = Kernel.lock(pid, :plan)
+
+      assert {:ok, status} = Kernel.status(pid, :plan)
+      assert status.state == :locked
+      assert status.updated_at != nil
+      assert status.size == String.length("hello")
+    end
+
+    test "status on undeclared slot returns error" do
+      {:ok, pid} = Kernel.start_link(buffers: [:plan])
+
+      assert {:error, :unknown_slot} = Kernel.status(pid, :unknown)
+    end
+  end
+
+  describe "lock/3 and set_metadata/3" do
+    test "lock merges caller-supplied metadata, readable via status" do
+      {:ok, pid} = Kernel.start_link(buffers: [:plan])
+
+      :ok = Kernel.lock(pid, :plan, %{focus: "intro", request_id: "abc"})
+
+      assert {:ok, %{metadata: %{focus: "intro", request_id: "abc"}}} =
+               Kernel.status(pid, :plan)
+    end
+
+    test "lock with empty metadata leaves existing metadata untouched" do
+      {:ok, pid} = Kernel.start_link(buffers: [:plan])
+
+      :ok = Kernel.set_metadata(pid, :plan, %{focus: "intro"})
+      :ok = Kernel.lock(pid, :plan, %{})
+
+      assert {:ok, %{metadata: %{focus: "intro"}}} = Kernel.status(pid, :plan)
+    end
+
+    test "set_metadata shallow-merges without touching the lock" do
+      {:ok, pid} = Kernel.start_link(buffers: [:plan])
+
+      :ok = Kernel.set_metadata(pid, :plan, %{focus: "intro", step: 1})
+      :ok = Kernel.set_metadata(pid, :plan, %{step: 2})
+
+      assert {:ok, status} = Kernel.status(pid, :plan)
+      assert status.state == :idle
+      assert status.metadata == %{focus: "intro", step: 2}
+    end
+
+    test "metadata persists across lock release" do
+      {:ok, pid} = Kernel.start_link(buffers: [:plan])
+      doc = Document.new("d", "c", "body")
+
+      :ok = Kernel.lock(pid, :plan, %{focus: "intro"})
+      :ok = Kernel.write_and_unlock(pid, :plan, doc)
+
+      assert {:ok, %{state: :idle, metadata: %{focus: "intro"}}} =
+               Kernel.status(pid, :plan)
+    end
+
+    test "set_metadata on undeclared slot returns error" do
+      {:ok, pid} = Kernel.start_link(buffers: [:plan])
+
+      assert {:error, :unknown_slot} = Kernel.set_metadata(pid, :unknown, %{a: 1})
+    end
+  end
+
   # ── Subscriptions / Notifications ───────────────────────
 
   describe "subscribe/notify" do
